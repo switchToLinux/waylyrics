@@ -50,7 +50,7 @@ void *wbcffi_init(const wbcffi_init_info *init_info,
   inst->container = GTK_BOX(gtk_box_new(GTK_ORIENTATION_VERTICAL, 5));
   gtk_container_add(GTK_CONTAINER(root), GTK_WIDGET(inst->container));
 
-  initDBus();
+  init();
 
   GtkLabel *label = GTK_LABEL(gtk_label_new(loadingText));
   GtkStyleContext *label_context = gtk_widget_get_style_context(GTK_WIDGET(label));
@@ -62,7 +62,7 @@ void *wbcffi_init(const wbcffi_init_info *init_info,
 
   std::thread([label, filterDest]() {
     for (;;) {
-      auto d = getCurrentLine(filterDest.c_str());
+      auto d = getCurrentLine();
       if (d.has_value()) {
         auto [line, pos, dur] = d.value();
         gtk_label_set_text(label, line.c_str());
