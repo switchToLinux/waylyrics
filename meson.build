@@ -16,14 +16,21 @@ sdbus          = dependency('sdbus-c++')
 
 shared_library('waylyrics',
     ['./waylyrics/waylyrics.cpp'],
-    dependencies: [ libcurl, gtk,  sdbus, glm, epoxy ],
+    dependencies: [libcurl, gtk, sdbus, glm, epoxy],
     include_directories: incdir,
     name_prefix: 'lib'
 )
 
 executable('demo',
     ['./demo/demo.cpp'],
-    dependencies: [ libcurl, gtk,  sdbus, glm, epoxy ],
+    dependencies: [libcurl, gtk, sdbus, glm, epoxy],
+    include_directories: incdir,
+    name_prefix: ''
+)
+
+executable('sigDemo',
+    ['./demo/SigDemo.cpp'],
+    dependencies: [libcurl, gtk, sdbus, glm, epoxy],
     include_directories: incdir,
     name_prefix: ''
 )

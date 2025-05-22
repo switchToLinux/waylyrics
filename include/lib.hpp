@@ -8,44 +8,138 @@
 #include <nlohmann/json.hpp>
 #include <sdbus-c++/sdbus-c++.h>
 #include <thread>
+#include <vector>
 
 #include "utils.hpp"
 
-const auto cacheDir = []() {
+
+
+const std::filesystem::path defaultCacheDir = []() {
   const char *home = getenv("HOME");
   return std::filesystem::path(std::string(home) + "/.cache/waylyrics");
 }();
 
-inline const char *loadingText = (char *)"loading lyrics...";
-inline const char *panicText = (char *)"no lyrics...";
+inline std::filesystem::path cachePath;
+
+inline const char *loadingText = "loading lyrics...";
+// inline const char *panicText = "no lyrics...";
 
 inline std::unique_ptr<sdbus::IConnection> conn;
 inline std::unique_ptr<sdbus::IProxy> proxy;
+inline std::unique_ptr<sdbus::IProxy> dbusProxy;
 inline std::string currentURL;
 inline std::vector<nlohmann::json> currentLyrics;
 
-inline void init() {
+inline std::vector<std::string> listPlayerNames();
+inline std::string getPlayingName(const std::vector<std::string> &names);
+
+inline void init(std::string destName, std::string cacheDir) {
   static bool has_run = false;
   if (has_run) {
     return;
   }
   has_run = true;
+  std::string serviceName;
 
-  std::filesystem::create_directories(cacheDir);
   try {
     conn = sdbus::createSessionBusConnection();
-    sdbus::ServiceName destination{"org.mpris.MediaPlayer2.mpv"};
+    if (destName == "mpris") {
+      // mpris player name
+      sdbus::ServiceName org_freedesktop_DBus{"org.freedesktop.DBus"};
+      sdbus::ObjectPath org_freedesktop_DBus_path{"/org/freedesktop/DBus"};
+      dbusProxy = sdbus::createProxy(*conn, org_freedesktop_DBus,
+                                      org_freedesktop_DBus_path);
+      auto names = listPlayerNames();
+      if (names.empty()) {
+        std::cerr << __FILE__ <<":" << __func__ <<":" << __LINE__ <<":"<< "No MPRIS player found"
+                  << std::endl;
+        return;
+      } else {
+        std::cout << "Found MPRIS players: " << std::endl;
+        for (const auto &name : names) {
+          std::cout << name << std::endl;
+        }
+      }
+    }
+    sdbus::ServiceName destination{"org.mpris.MediaPlayer2.mpv"}; // TODO: 支持其他播放器
     sdbus::ObjectPath objectPath{"/org/mpris/MediaPlayer2"};
     proxy = sdbus::createProxy(*conn, destination, objectPath);
     std::cout << "Connected to D-Bus" << std::endl;
+    if (cacheDir.empty()) {
+      std::cout << "Cache dir not specified, use default: " << defaultCacheDir << std::endl;
+      cachePath = defaultCacheDir;
+    } else {
+      cachePath = std::filesystem::path(cacheDir);
+    }
+    std::filesystem::create_directories(cachePath);
+    std::cout << "Cache dir created: " << cachePath << std::endl;
   } catch (const sdbus::Error &e) {
-    std::cerr << "D-Bus error: " << e.getMessage() << std::endl;
+    std::cerr << __FILE__ <<":" << __func__ <<":" << __LINE__ <<":"<< "D-Bus error: " << e.getMessage() << std::endl;
+  } catch (const std::exception &e) {
+    std::cerr << __FILE__ <<":" << __func__ <<":" << __LINE__ <<":"<< "General error: " << e.what() << std::endl;
+  } catch (...) {
+    std::cerr << __FILE__ <<":" << __func__ <<":" << __LINE__ <<":"<< "Unknown error occurred" << std::endl;
   }
+}
+
+inline std::vector<std::string> listPlayerNames() {
+  if (!dbusProxy) {
+    std::cerr << __FILE__ <<":" << __func__ <<":" << __LINE__ <<":"<< "D-Bus proxy not initialized" << std::endl;
+    return {};
+  }
+  std::vector<std::string> names;
+  try {
+    dbusProxy->callMethod("ListNames")
+        .onInterface("org.freedesktop.DBus")
+        .storeResultsTo(names);
+  } catch (const sdbus::Error &e) {
+    std::cerr << __FILE__ <<":" << __func__ <<":" << __LINE__ <<":"<< "D-Bus error: " << e.getMessage() << std::endl;
+  } catch (const std::exception &e) {
+    std::cerr << __FILE__ <<":" << __func__ <<":" << __LINE__ <<":"<< "General error: " << e.what() << std::endl;
+  } catch (...) {
+    std::cerr << __FILE__ <<":" << __func__ <<":" << __LINE__ <<":"<< "Unknown error occurred" << std::endl;
+  }
+  // 过滤出以 org.mpris.MediaPlayer2. 开头的名称 并且过滤掉 playerctld 结尾的名称
+  names.erase(std::remove_if(names.begin(), names.end(),
+                             [](const std::string &name) {
+                               return name.find("org.mpris.MediaPlayer2.")!= 0 || name.find("playerctld")!= std::string::npos;
+                             }),
+              names.end());
+  return names;
+}
+
+// 根据names获取Playing状态的name
+inline std::string getPlayingName(const std::vector<std::string> &names) {
+  if (!dbusProxy) {
+    std::cerr << __FILE__ <<":" << __func__ <<":" << __LINE__ <<":"<< "D-Bus proxy not initialized" << std::endl;
+    return "";
+  }
+  sdbus::Variant playbackStatus;
+  for (const auto &name : names) {
+    try {
+      sdbus::ServiceName destination{name};
+      sdbus::ObjectPath objectPath{"/org/mpris/MediaPlayer2"};
+      proxy = sdbus::createProxy(*conn, destination, objectPath);
+      proxy->callMethod("Get")
+          .onInterface("org.freedesktop.DBus.Properties")
+          .withArguments(name, "PlaybackStatus")
+          .storeResultsTo(playbackStatus);
+
+      const std::string status = playbackStatus.get<std::string>();
+      if (status == "Playing") {
+        std::cout << "Found playing player: " << name << std::endl;
+        return name;
+      }
+    } catch (const sdbus::Error &e) {
+      std::cerr << __FILE__ <<":" << __func__ <<":" << __LINE__ <<":"<< "D-Bus error: " << e.getMessage() << std::endl;
+    }
+  }
+  return "";
 }
 
 inline std::tuple<std::string, std::string, int, int, bool> getNowPlaying() {
   if (!proxy) {
-    std::cerr << "D-Bus proxy not initialized" << std::endl;
+    std::cerr << __FILE__ <<":" << __func__ <<":" << __LINE__ <<":"<< "D-Bus proxy not initialized" << std::endl;
     return {"", "", 0, 0, false};
   }
 
@@ -65,11 +159,11 @@ inline std::tuple<std::string, std::string, int, int, bool> getNowPlaying() {
     const std::string status = playbackStatus.get<std::string>();
 
     if (status != "Playing") {
-      std::cerr << "Not in playing state: " << status << std::endl;
+      std::cerr << __FILE__ <<":" << __func__ <<":" << __LINE__ <<":"<< "Not in playing state: " << status << std::endl;
       return {status, "", 0, 0, false}; // Paused 或 Playing 状态
     }
   } catch (const sdbus::Error &e) { // 捕获D-Bus特定错误
-    std::cerr << "D-Bus error0: " << e.getMessage() << std::endl;
+    std::cerr << __FILE__ <<":" << __func__ <<":" << __LINE__ <<":"<< "D-Bus error0: " << e.getMessage() << std::endl;
     return {"Stoped", "", 0, 0, false}; // 没有找到 mpv 实例
   }
   try {
@@ -86,7 +180,7 @@ inline std::tuple<std::string, std::string, int, int, bool> getNowPlaying() {
     if (md.count("xesam:title")) {
       title = md["xesam:title"].get<std::string>();
     } else {
-      std::cerr << "Warning: xesam:title not found in metadata" << std::endl;
+      std::cerr << __FILE__ <<":" << __func__ <<":" << __LINE__ <<":"<< "Warning: xesam:title not found in metadata" << std::endl;
     }
 
     if (md.count("xesam:artist")) {
@@ -96,23 +190,22 @@ inline std::tuple<std::string, std::string, int, int, bool> getNowPlaying() {
       if (md.count("xesam:albumArtist")) {
         artists = md["xesam:albumArtist"].get<std::vector<std::string>>();
       } else {
-        std::cerr << "Warning: xesam:albumArtist not found in metadata"
+        std::cerr << __FILE__ <<":" << __func__ <<":" << __LINE__ <<":"<< "Warning: xesam:albumArtist not found in metadata"
                   << std::endl;
       }
     }
-
     // 解析媒体长度
     if (md.count("mpris:length")) {
       // 数据类型可能是 int64 或 uint64，统一转为 int64
       length = md["mpris:length"].get<int64_t>();
     } else {
-      std::cerr << "Warning: mpris:length not found in metadata" << std::endl;
+      std::cerr << __FILE__ <<":" << __func__ <<":" << __LINE__ <<":"<< "Warning: mpris:length not found in metadata" << std::endl;
     }
   } catch (const sdbus::Error &e) { // 捕获D-Bus特定错误
-    std::cerr << "D-Bus error1: " << e.getMessage() << std::endl;
+    std::cerr << __FILE__ <<":" << __func__ <<":" << __LINE__ <<":"<< "D-Bus error1: " << e.getMessage() << std::endl;
     return {"", "", 0, 0, false};
   } catch (const std::exception &e) { // 捕获其他标准异常
-    std::cerr << "General error1: " << e.what() << std::endl;
+    std::cerr << __FILE__ <<":" << __func__ <<":" << __LINE__ <<":"<< "General error1: " << e.what() << std::endl;
     return {"", "", 0, 0, false};
   }
 
@@ -126,10 +219,10 @@ inline std::tuple<std::string, std::string, int, int, bool> getNowPlaying() {
         .storeResultsTo(posVar);
     position = posVar.get<int64_t>();
   } catch (const sdbus::Error &e) { // 捕获D-Bus特定错误
-    std::cerr << "D-Bus error2: " << e.getMessage() << std::endl;
+    std::cerr << __FILE__ <<":" << __func__ <<":" << __LINE__ <<":"<< "D-Bus error2: " << e.getMessage() << std::endl;
     return {"", "", 0, 0, false};
   } catch (const std::exception &e) { // 捕获其他标准异常
-    std::cerr << "General error2: " << e.what() << std::endl;
+    std::cerr << __FILE__ <<":" << __func__ <<":" << __LINE__ <<":"<< "General error2: " << e.what() << std::endl;
     return {"", "", 0, 0, false};
   }
 
@@ -153,11 +246,11 @@ inline std::vector<nlohmann::json> getLyrics(const std::string &query) {
     return currentLyrics;
   }
 
-  std::filesystem::path cachePath = cacheDir / std::to_string(hash_fnv(url));
+  std::filesystem::path lyricsCachePath = cachePath / std::to_string(hash_fnv(url));
   std::string content;
 
-  if (std::filesystem::exists(cachePath)) {
-    std::ifstream file(cachePath, std::ios::binary);
+  if (std::filesystem::exists(lyricsCachePath)) {
+    std::ifstream file(lyricsCachePath, std::ios::binary);
     content = std::string(std::istreambuf_iterator<char>(file), {});
   } else {
     CURL *curl = curl_easy_init();
@@ -168,12 +261,12 @@ inline std::vector<nlohmann::json> getLyrics(const std::string &query) {
       CURLcode res = curl_easy_perform(curl);
 
       if (res != CURLE_OK) {
-        std::cerr << "CURL error: " << curl_easy_strerror(res) << std::endl;
+        std::cerr << __FILE__ <<":" << __func__ <<":" << __LINE__ <<":"<< "CURL error: " << curl_easy_strerror(res) << std::endl;
         return {};
       }
 
-      std::thread([cachePath, content, curl]() {
-        std::ofstream file(cachePath);
+      std::thread([lyricsCachePath, content, curl]() {
+        std::ofstream file(lyricsCachePath);
         file << content;
         curl_easy_cleanup(curl);
       }).detach();
@@ -187,7 +280,7 @@ inline std::vector<nlohmann::json> getLyrics(const std::string &query) {
 
     currentLyrics = json.get<std::vector<nlohmann::json>>();
   } catch (const std::exception &e) {
-    std::cerr << "Error parsing JSON: " << e.what() << std::endl;
+    std::cerr << __FILE__ <<":" << __func__ <<":" << __LINE__ <<":"<< "Error parsing JSON: " << e.what() << std::endl;
     return {};
   }
 
@@ -225,12 +318,18 @@ inline std::string getPlainLine(uint64_t pos, uint64_t dur,
 
 inline std::optional<std::tuple<std::string, int64_t, int64_t>>
 getCurrentLine() {
-  std::string line = panicText;
+  std::string line = "";
   auto [title, artists, pos, dur, ok] = getNowPlaying();
   if (!ok) {                             // 非 playing 状态
     return std::make_tuple(title, 0, 0); // 此时 title 表示的状态信息
   }
-  auto ret = getLyrics(title + ' ' + artists);
+  std::vector<nlohmann::json> ret;
+  try {
+    ret = getLyrics(title);
+  } catch (const std::exception &e) {
+    std::cerr << __FILE__ <<":" << __func__ <<":" << __LINE__ <<":"<< "Error getting lyrics: " << e.what() << std::endl;
+    return std::make_tuple(title, 0, 0);
+  }
   if (ret.size()) {
     try {
       auto &first = ret[0];
@@ -241,14 +340,19 @@ getCurrentLine() {
         std::string plainLyrics = first["plainLyrics"];
         line = getPlainLine(pos, dur, plainLyrics);
       } else {
-        std::cerr << "No lyrics for item" << std::endl;
+        std::cerr << __FILE__ <<":" << __func__ <<":" << __LINE__ <<":"<< "No lyrics for item" << std::endl;
       }
     } catch (const std::exception &e) {
-      std::cerr << "Error processing lyrics json: " << e.what() << std::endl;
+      std::cerr << __FILE__ <<":" << __func__ <<":" << __LINE__ <<":"<< "Error processing lyrics json: " << e.what() << std::endl;
     }
   } else {
-    std::cerr << "No lyrics list for [" << title << artists << pos << dur << ok
-              << "]" << std::endl;
+    std::cerr << __FILE__ << ":" << __func__ << ":" << __LINE__ << ":"
+              << "No lyrics for [" << title << "|" << artists << "|" << pos
+              << "|" << dur << "|" << ok << "]" << std::endl;
   }
-  return std::make_tuple(line, pos, dur);
+  std::string lineWithTitle = "《" + title + "》-" + artists ;
+  if (!line.empty()) {
+    lineWithTitle += ":" + line;
+  }
+  return std::make_tuple(lineWithTitle, pos, dur);
 }

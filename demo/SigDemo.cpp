@@ -6,13 +6,34 @@
 #include <string>
 #include <thread>
 
-sdbus::signal_handler onConcatenated(sdbus::Signal signal) {
-  std::string concatenatedString;
-  signal >> concatenatedString;
-  std::cout << "Received signal with concatenated string " << concatenatedString
-            << std::endl;
+std::vector<std::string> listDBusNames() {
+  // 连接到 session bus
+  auto connection = sdbus::createSessionBusConnection();
 
+  // 创建 org.freedesktop.DBus 的代理对象
+  sdbus::ServiceName org_freedesktop_DBus{"org.freedesktop.DBus"};
+  sdbus::ObjectPath org_freedesktop_DBus_path{"/org/freedesktop/DBus"};
+  auto proxy = sdbus::createProxy(*connection, org_freedesktop_DBus,
+                                  org_freedesktop_DBus_path);
+
+  // 调用 ListNames 方法
+  std::vector<std::string> names;
+  proxy->callMethod("ListNames")
+      .onInterface("org.freedesktop.DBus")
+      .storeResultsTo(names);
+
+  // 过滤出以 org.mpris.MediaPlayer2 开头的名称但不包含 playerctld
+  std::vector<std::string> filteredNames;
+  for (const auto &name : names) {
+    if (name.find("org.mpris.MediaPlayer2.") == 0 &&
+      name.find("org.mpris.MediaPlayer2.playerctld") == std::string::npos) {
+      filteredNames.push_back(name);
+    }
+  }
+  return filteredNames;
 }
+
+
 // Callback function for NameOwnerChanged signal
 void onNameOwnerChanged(std::string name, std::string oldOwner,
                         std::string newOwner) {
@@ -34,6 +55,12 @@ void onNameOwnerChanged(std::string name, std::string oldOwner,
 
 int main() {
   try {
+    std::cout << "Current music players:\n";
+    for (const auto &name : listDBusNames()) {
+      std::cout << "- " << name << "\n";
+    }
+    std::cout << "\n--------------------------\n\n";
+
     // Create a D-Bus connection to the session bus
     auto connection = sdbus::createSessionBusConnection();
 
@@ -43,15 +70,7 @@ int main() {
     auto proxy = sdbus::createProxy(*connection, org_freedesktop_DBus,
                                     org_freedesktop_DBus_path);
 
-    // Define the match rule to subscribe to NameOwnerChanged signals
-    // We're interested in services starting with org.mpris.MediaPlayer2
-    std::string matchRule = "type='signal',sender='org.freedesktop.DBus',"
-                            "interface='org.freedesktop.DBus',"
-                            "member='NameOwnerChanged',"
-                            "arg0namespace='org.mpris.MediaPlayer2'";
-
-    // Subscribe to the NameOwnerChanged signal
-    // 使用公开接口注册信号处理器
+    // 注册 NameOwnerChanged 信号处理器
     proxy->uponSignal("NameOwnerChanged")
         .onInterface("org.freedesktop.DBus")
         .call([&](const std::string &name, const std::string &oldOwner,
