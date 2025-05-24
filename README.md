@@ -44,6 +44,22 @@ meson compile -C build
 - cache_dir: 歌词缓存目录, 用于缓存歌词, 避免每次都请求歌词, 默认为 ~/.cache/waylyrics
 -
 
+## dbus命令帮助
+
+```bash
+
+# 监视当前播放器的属性变化
+dbus-monitor --session interface=org.freedesktop.DBus.Properties path=/org/mpris/MediaPlayer2/Player member=PropertiesChanged
+
+# 查看 PropertiesChanged 事件
+dbus-monitor --session interface=org.freedesktop.DBus.Properties path=/org/mpris/MediaPlayer2/Player member=PropertiesChanged
+
+
+# 查看当前播放器的播放位置
+dbus-send --session --dest=org.mpris.MediaPlayer2.musicfox.instance176348 --print-reply --type=method_call /org/mpris/MediaPlayer2/Player org.freedesktop.DBus.Properties.Get string:"org.mpris.MediaPlayer2.Player" string:"Position"
+
+
+```
 
 ## 功能逻辑说明
 

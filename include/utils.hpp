@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cinttypes>
 #include <curl/curl.h>
 #include <string>
@@ -36,6 +37,11 @@ inline std::string url_encode(const std::string &decoded) {
   return result;
 }
 
+inline std::string replace_space(const std::string &str) {
+  std::string result = str;
+  std::replace(result.begin(), result.end(), ' ', '_');
+  return result;
+}
 template <typename T,
           std::enable_if_t<std::is_same<T, std::string_view>::value ||
                                !std::is_rvalue_reference_v<T &&>,
@@ -63,4 +69,58 @@ inline std::string &ltrim(std::string &s, const char *t = ws) {
 // trim from both ends of string (right then left)
 inline std::string &trim(std::string &s, const char *t = ws) {
   return ltrim(rtrim(s, t), t);
+}
+
+// 将 "[MM:SS.ss]" 格式的时间字符串转换为毫秒数（如 "[04:58.94]" → 298940ms）
+// 返回：成功时为毫秒数，失败时返回 0
+inline uint64_t timestampToMs(const std::string &timestampStr) {
+
+  // 步骤1：提取方括号内的时间部分（如 "[04:58.94]" → "04:58.94"）
+  size_t start = timestampStr.find('[');
+  size_t end = timestampStr.find(']');
+  if (start == std::string::npos || end == std::string::npos || start >= end) {
+    return 0;
+  }
+  std::string timePart =
+      timestampStr.substr(start + 1, end - start - 1); // 提取 "04:58.94"
+
+  // 步骤2：按 ":" 和 "." 分割时间单元（支持 "MM:SS" 或 "MM:SS.ss"）
+  size_t colonPos = timePart.find(':');
+  size_t dotPos = timePart.find('.');
+  if (colonPos == std::string::npos) {
+    return 0;
+  }
+
+  // 解析分钟（MM）
+  std::string minStr = timePart.substr(0, colonPos);
+  if (!std::all_of(minStr.begin(), minStr.end(), ::isdigit)) {
+    return 0;
+  }
+  int minutes = std::stoi(minStr);
+
+  // 解析秒（SS）
+  std::string secStr;
+  std::string centiSecStr = "0"; // 百分秒默认0
+  if (dotPos != std::string::npos) {
+    secStr = timePart.substr(colonPos + 1, dotPos - colonPos - 1);
+    centiSecStr = timePart.substr(dotPos + 1);
+  } else {
+    secStr = timePart.substr(colonPos + 1);
+  }
+  if (!std::all_of(secStr.begin(), secStr.end(), ::isdigit)) {
+    return 0;
+  }
+  int seconds = std::stoi(secStr);
+
+  // 解析百分秒（ss，最多取两位）
+  if (centiSecStr.length() > 2)
+    centiSecStr = centiSecStr.substr(0, 2); // 截断多余位数
+  if (!std::all_of(centiSecStr.begin(), centiSecStr.end(), ::isdigit)) {
+    return 0;
+  }
+  int centiSeconds = centiSecStr.empty() ? 0 : std::stoi(centiSecStr);
+
+  // 步骤3：计算总毫秒数（分钟×60×1000 + 秒×1000 + 百分秒×10）
+  uint64_t ms = minutes * 60 * 1000 + seconds * 1000 + centiSeconds * 10;
+  return ms;
 }

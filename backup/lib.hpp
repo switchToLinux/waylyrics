@@ -286,6 +286,7 @@ inline std::vector<nlohmann::json> getLyrics(const std::string &query) {
 
   return currentLyrics;
 }
+
 inline std::string getSyncedLine(uint64_t pos,
                                  const std::string &syncedLyrics) {
   auto strVec = split(syncedLyrics, "\n");
