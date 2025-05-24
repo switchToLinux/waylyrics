@@ -2,19 +2,21 @@
 
 TARGET = libwaylyrics.so
 BUILD_DIR = build
-# DESTDIR = ~/.config/cffi/
-DESTDIR = /apps/libs/
+
+# 通过参数设置 DESTDIR
+# 例如：make install DESTDIR=/apps/libs/
+DESTDIR = ~/.config/cffi/
 
 ALL = $(TARGET)
 
 $(TARGET):
 	@meson setup $(BUILD_DIR) -Dcpp_args=-DERROR_ENABLED
-	@meson compile -C $(BUILD_DIR) waylyricsv2
+	@meson compile -C $(BUILD_DIR) waylyrics
 	@echo "Build complete!"
 
 debug:
 	@meson setup $(BUILD_DIR) -Dcpp_args=-DDEBUG_ENABLED
-	@meson compile -C $(BUILD_DIR) waylyricsv2
+	@meson compile -C $(BUILD_DIR) waylyrics
 	@echo "Build complete!"
 
 demo:
