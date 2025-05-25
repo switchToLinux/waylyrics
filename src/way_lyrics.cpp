@@ -214,9 +214,15 @@ struct UpdateData {
 static void updateLabelText(GtkLabel *label, const std::string &text,
                             uint64_t position, std::string prefix = "",
                             const std::string &playerStatus = "playing") {
+  static std::string lastText = ""; // 记录上一次的歌词行
   auto line = getSyncedLine(position, text);
 
   line = prefix + line;
+  if (line.empty() || lastText == line) { // 减少不必要的更新
+    DEBUG("  >> No lyrics or same line, skipping update: [%s]", line.c_str());
+    return;
+  }
+  lastText = line;
   DEBUG("  >> Updating label: positon:%ld, text: %s", position, line.c_str());
   // 使用 gdk_threads_add_idle 提交到主线程执行
   gdk_threads_add_idle(
@@ -250,33 +256,6 @@ void WayLyrics::start(GtkLabel *label) {
     return;
   displayLabel_ = label;
   isRunning_ = true;
-
-  INFO(">> WayLyrics started");
-  // 应用CSS样式
-  auto context = gtk_widget_get_style_context(GTK_WIDGET(label));
-  gtk_style_context_add_class(context, cssClass_.c_str());
-
-  // 如果歌词为空且状态为播放中，则尝试获取歌词
-  if (currentState_.metadata.lyrics.empty() &&
-      currentState_.status == PlaybackStatus::Playing) {
-    currentState_.metadata.lyrics = getLyrics(currentState_.metadata.title , currentState_.metadata.artist);
-    if (currentState_.metadata.lyrics.empty()) {
-      currentState_.metadata.lyrics = getLyrics(currentState_.metadata.title, "");
-    }
-  }
-  // 初始化时显示初始歌词
-  std::string prefix = "";
-  if(!currentState_.metadata.title.empty())
-    prefix = "《" + currentState_.metadata.title + "》" + currentState_.metadata.artist + " - ";
-
-  if (!currentState_.metadata.lyrics.empty()) {
-    updateLabelText(displayLabel_, currentState_.metadata.lyrics,
-                    currentState_.position, prefix);
-  } else if(currentState_.playerName.empty()) {
-    updateLabelText(displayLabel_, NOPLAYER, 0, "");
-  } else {
-    updateLabelText(displayLabel_, "", 0, "loading...");
-  }
 
   INFO("  >> Starting update thread");
   updateThread_ = std::thread([this]() {
@@ -332,8 +311,8 @@ void WayLyrics::stop() {
   isRunning_ = false;
   // 主动等待线程退出
   try {
+    DEBUG("  >> Waiting for update thread to finish");
     if(updateThread_.joinable()) {
-      DEBUG("  >> Waiting for update thread to finish");
       updateThread_.join();
     }
     DEBUG("  >> Update thread stopped");
