@@ -1,9 +1,11 @@
+#include "common.h"
 #include <algorithm>
 #include <cinttypes>
 #include <curl/curl.h>
+#include <fstream>
+#include <nlohmann/json.hpp>
 #include <string>
 #include <vector>
-
 inline std::vector<std::string> split(std::string s, std::string delimiter) {
   size_t pos_start = 0, pos_end, delim_len = delimiter.length();
   std::string token;
@@ -123,4 +125,77 @@ inline uint64_t timestampToMs(const std::string &timestampStr) {
   // 步骤3：计算总毫秒数（分钟×60×1000 + 秒×1000 + 百分秒×10）
   uint64_t ms = minutes * 60 * 1000 + seconds * 1000 + centiSeconds * 10;
   return ms;
+}
+
+inline size_t WriteCallback(void *contents, size_t size, size_t nmemb,
+                            void *userp) {
+  ((std::string *)userp)->append((char *)contents, size * nmemb);
+  return size * nmemb;
+}
+
+// 下载歌词(Lrclib) - 同步阻塞IO方式
+// 输入：歌曲名称，艺术家名称（可选）
+// 输出：成功时返回歌词字符串，失败时返回空字符串
+// 注意：此函数可能会阻塞，需要在单独的线程中调用
+inline std::string getLyricsByLrclib(const std::string &trackName,
+                                 const std::string &artist = "") {
+  std::string trim_query = trackName + " " + artist;
+  trim_query = trim(trim_query);
+  if (trim_query.empty()) {
+    return "";
+  }
+  std::string url =
+      "https://lrclib.net/api/search?track_name=" + url_encode(trackName);
+
+  // 如果提供了艺术家名称，添加到URL中
+  if (!artist.empty())
+    url += "&artist_name=" + url_encode(artist);
+  std::string content;
+
+  std::string syncedLyrics = "";
+
+  CURL *curl = curl_easy_init();
+  if (curl) {
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &content);
+    CURLcode res = curl_easy_perform(curl);
+
+    if (res != CURLE_OK) {
+      ERROR("  >> CURL error: %s", curl_easy_strerror(res));
+      return "";
+    }
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+    if (http_code != 200) {
+      ERROR("  >> HTTP error: %ld", http_code);
+      return "";
+    }
+    if (content.empty()) {
+      ERROR("  >> No content received");
+      return "";
+    }
+    curl_easy_cleanup(curl);
+  }
+
+  try {
+    auto json = nlohmann::json::parse(content, nullptr, false);
+    if (json.is_discarded())
+      return "";
+
+    auto currentLyrics = json.get<std::vector<nlohmann::json>>();
+    if (currentLyrics.empty())
+      return "";
+    auto &first = currentLyrics[0];
+    if (first.count("syncedLyrics")) {
+      return first["syncedLyrics"];
+    } else {
+      WARN("  >> No syncedLyrics found in JSON");
+      return "";
+    }
+  } catch (const std::exception &e) {
+    WARN("Error parsing JSON: %s", e.what());
+    return "";
+  }
+  return "";
 }

@@ -14,14 +14,14 @@ PlayerManager::PlayerManager(
     std::function<void(const PlayerState &)> stateCallback)
     : dbusConn_(std::move(dbusConn)), stateCallback_(std::move(stateCallback)) {
   if (!dbusConn_) {
-    std::cerr << "Failed to initialize D-Bus connection" << std::endl;
+    ERROR("Failed to initialize D-Bus connection");
     return;
   }
   sdbus::ServiceName destination{"org.freedesktop.DBus"};
   sdbus::ObjectPath objectPath{"/org/freedesktop/DBus"};
   dbusProxy_ = sdbus::createProxy(*dbusConn_, destination, objectPath);
   if (!dbusProxy_) {
-    std::cerr << "Failed to create D-Bus proxy" << std::endl;
+    ERROR("Failed to create D-Bus proxy");
     return;
   }
   INFO("D-Bus connection initialized");
@@ -74,7 +74,7 @@ std::vector<std::string> PlayerManager::listPlayerNames() {
       }
     }
   } catch (const sdbus::Error &e) {
-    std::cerr << "Error getting player names: " << e.what() << std::endl;
+    WARN("Error getting player names: %s", e.what());
   }
   return playerNames;
 }
@@ -105,15 +105,13 @@ PlayerState PlayerManager::getPlayerState() const {
 
     if (status != "Playing" && status != "Paused") {
       state.status = PlaybackStatus::Stopped;
-      std::cerr << __FILE__ << ":" << __func__ << ":" << __LINE__ << ":"
-                << "Not in playing state: " << status << std::endl;
+      WARN("Not in playing state: %s", status.c_str());
       return state;
     } else {
       state.status = status == "Playing" ? PlaybackStatus::Playing : PlaybackStatus::Paused;
     }
   } catch (const sdbus::Error &e) { // 捕获D-Bus特定错误
-    std::cerr << __FILE__ << ":" << __func__ << ":" << __LINE__ << ":"
-              << "D-Bus error0: " << e.getMessage() << std::endl;
+    WARN("D-Bus error: %s", e.getMessage().c_str());
     state.status = PlaybackStatus::Unknown;
     return state;
   }
@@ -131,17 +129,14 @@ PlayerState PlayerManager::getPlayerState() const {
     if (md.count("xesam:title")) {
       state.metadata.title = md["xesam:title"].get<std::string>();
     } else {
-      std::cerr << __FILE__ << ":" << __func__ << ":" << __LINE__ << ":"
-                << "Warning: xesam:title not found in metadata" << std::endl;
+      WARN("xesam:title not found in metadata");
     }
 
     // 歌词解析
     if (md.count("xesam:asText")) {
       state.metadata.lyrics = md["xesam:asText"].get<std::string>();
     } else {
-      // TODO: 网络获取歌词信息或者查询本地缓存
-      std::cerr << __FILE__ << ":" << __func__ << ":" << __LINE__ << ":"
-                << "Warning: xesam:asText not found in metadata" << std::endl;
+      WARN("xesam:asText not found in metadata");
     }
 
     if (md.count("xesam:artist")) {
@@ -153,9 +148,7 @@ PlayerState PlayerManager::getPlayerState() const {
         state.metadata.artist =
             md["xesam:albumArtist"].get<std::vector<std::string>>()[0];
       } else {
-        std::cerr << __FILE__ << ":" << __func__ << ":" << __LINE__ << ":"
-                  << "Warning: xesam:albumArtist not found in metadata"
-                  << std::endl;
+        WARN("xesam:albumArtist not found in metadata");
       }
     }
     // 解析媒体长度
@@ -163,16 +156,13 @@ PlayerState PlayerManager::getPlayerState() const {
       // 数据类型是 int64_t
       state.metadata.length = md["mpris:length"].get<int64_t>() / 1000;
     } else {
-      std::cerr << __FILE__ << ":" << __func__ << ":" << __LINE__ << ":"
-                << "Warning: mpris:length not found in metadata" << std::endl;
+      WARN("mpris:length not found in metadata");
     }
   } catch (const sdbus::Error &e) { // 捕获D-Bus特定错误
-    std::cerr << __FILE__ << ":" << __func__ << ":" << __LINE__ << ":"
-              << "D-Bus error1: " << e.getMessage() << std::endl;
+    WARN("D-Bus error: %s", e.getMessage().c_str());
     return state;
   } catch (const std::exception &e) { // 捕获其他标准异常
-    std::cerr << __FILE__ << ":" << __func__ << ":" << __LINE__ << ":"
-              << "General error1: " << e.what() << std::endl;
+    WARN("General error: %s", e.what());
     return state;
   }
 
@@ -185,12 +175,10 @@ PlayerState PlayerManager::getPlayerState() const {
         .storeResultsTo(posVar);
     state.position = posVar.get<int64_t>() / 1000;
   } catch (const sdbus::Error &e) { // 捕获D-Bus特定错误
-    std::cerr << __FILE__ << ":" << __func__ << ":" << __LINE__ << ":"
-              << "D-Bus error2: " << e.getMessage() << std::endl;
+    WARN("D-Bus error: %s", e.getMessage().c_str());
     return state;
   } catch (const std::exception &e) { // 捕获其他标准异常
-    std::cerr << __FILE__ << ":" << __func__ << ":" << __LINE__ << ":"
-              << "General error2: " << e.what() << std::endl;
+    WARN("General error: %s", e.what());
     return state;
   }
   return state;

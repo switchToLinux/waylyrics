@@ -91,11 +91,17 @@ void *wbcffi_init(const wbcffi_init_info *init_info,
     // 初始化
     inst->container = nullptr;
     inst->waybar_module = init_info->obj;
-    inst->wayLyrics = std::make_unique<WayLyrics>(cacheDir, updateInterval, cssClass);
+    inst->wayLyrics = nullptr;
+    try{
+      inst->wayLyrics = std::make_unique<WayLyrics>(cacheDir, updateInterval, cssClass);
+    } catch (const std::exception &e) {
+      ERROR("waylyrics: 初始化失败，std::exception: %s", e.what());
+    } catch (...) {
+      ERROR("waylyrics: 初始化失败，未知异常");
+    }
     if (!inst->wayLyrics) {
       ERROR("waylyrics: 初始化失败，无法创建WayLyrics实例");
-      free(inst);
-      return nullptr;
+
     }
     // 创建GTK容器和标签
     GtkContainer *root = init_info->get_root_widget(init_info->obj);

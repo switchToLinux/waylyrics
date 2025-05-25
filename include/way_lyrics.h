@@ -42,15 +42,14 @@ private:
 
 
   // 成员变量
-  std::filesystem::path cachePath;               // 歌词缓存目录
-  unsigned int updateInterval_;                  // 歌词刷新间隔（秒）
-  std::string cssClass_;                         // GTK标签的CSS类名
-  GtkLabel *displayLabel_;      // 绑定的GTK标签（用于显示歌词）
-  std::atomic<bool> isRunning_; // 运行状态标记（原子操作保证线程安全）
-  std::thread updateThread_;    // 歌词刷新后台线程
-  PlayerState currentState_;    // 当前播放器状态（线程安全需加锁）
+  std::filesystem::path cachePath;     // 歌词缓存目录
+  unsigned int updateInterval_;        // 歌词刷新间隔（秒）
+  std::string cssClass_;               // GTK标签的CSS类名
+  GtkLabel *displayLabel_{nullptr};    // 绑定的GTK标签（用于显示歌词）
+  std::atomic<bool> isRunning_{false}; // 运行状态标记（原子操作保证线程安全）
+  std::thread updateThread_{};         // 歌词刷新后台线程
+  PlayerState currentState_;           // 当前播放器状态（线程安全需加锁）
   std::shared_ptr<sdbus::IConnection> dbusConn_;
-  std::string currentURL;       // 当前歌词请求的URL
 };
 
 #endif // WAYLYRICS_WAY_LYRICS_H
