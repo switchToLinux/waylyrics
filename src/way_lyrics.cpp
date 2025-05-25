@@ -34,53 +34,67 @@ WayLyrics::WayLyrics(const std::string &cacheDir, unsigned int updateInterval,
   // 初始化缓存目录
   cachePath = std::filesystem::path(cacheDir);
   // 初始化D-Bus连接和PlayerManager
-  auto dbusUniqueConn = sdbus::createSessionBusConnection();  // 原始unique_ptr连接
-  dbusConn_ = std::shared_ptr<sdbus::IConnection>(dbusUniqueConn.release());  // 转换为shared_ptr
-  playerManager_ = std::make_unique<PlayerManager>(
-      dbusConn_, [this](const PlayerState &state) { // 传递shared_ptr连接
-        DEBUG("  >> PlayerState updated: %s", state.playerName.c_str());
-        currentState_ = state;
-        // 如果歌词为空且状态为播放中，则尝试获取歌词
-        if(currentState_.metadata.lyrics.empty() && currentState_.status == PlaybackStatus::Playing){
-          try{
-            currentState_.metadata.lyrics = getLyrics(currentState_.metadata.title + " " + currentState_.metadata.artist);
-          } catch (const std::exception &e) {
-            DEBUG("  >> Failed to get lyrics: %s", e.what());
+  try{
+    auto dbusUniqueConn = sdbus::createSessionBusConnection();  // 原始unique_ptr连接
+    dbusConn_ = std::shared_ptr<sdbus::IConnection>(dbusUniqueConn.release());  // 转换为shared_ptr
+    playerManager_ = std::make_unique<PlayerManager>(
+        dbusConn_, [this](const PlayerState &state) { // 传递shared_ptr连接
+          DEBUG("  >> PlayerState updated: %s", state.playerName.c_str());
+          currentState_ = state;
+          // 如果歌词为空且状态为播放中，则尝试获取歌词
+          if (currentState_.metadata.lyrics.empty() &&
+              currentState_.status == PlaybackStatus::Playing) {
+              DEBUG("  >> Fetching lyrics for: %s by %s",
+                    currentState_.metadata.title.c_str(),
+                    currentState_.metadata.artist.c_str());
+              try {
+                currentState_.metadata.lyrics = getLyrics(
+                    currentState_.metadata.title, currentState_.metadata.artist);
+                if (currentState_.metadata.lyrics.empty()) {
+                  currentState_.metadata.lyrics =
+                      getLyrics(currentState_.metadata.title, "");
+                }
+              } catch (const std::exception &e) {
+                WARN("  >> Failed to get lyrics: %s", e.what());
+              }
           }
-        }
-        currentState_.position += 200; // 微调预览歌词的时间
-        // displayState(currentState_); // 显示当前状态
-      });
+          currentState_.position += 200; // 微调预览歌词的时间
+        });
+  } catch (const std::exception &e) {
+    ERROR("  >> Failed to initialize PlayerManager: %s", e.what());
+    return;
+  }
   INFO("  >> WayLyrics initialized, params: cacheDir:%s updateInterval=%d, cssClass=%s", cachePath.c_str(), updateInterval_, cssClass_.c_str() );
 }
-
 WayLyrics::~WayLyrics() {
-  // 先销毁 PlayerManager（释放对 dbusConn_ 的引用）
+  INFO("  >> WayLyrics destroyed");
+  stop();
   playerManager_.reset();
-  // 再停止线程和清理资源
-  stop(); 
 }
-
 size_t WriteCallback(void *contents, size_t size, size_t nmemb, void *userp) {
   ((std::string *)userp)->append((char *)contents, size * nmemb);
   return size * nmemb;
 }
 
-std::string WayLyrics::getLyrics(const std::string &query) {
-  std::string trim_query = query;
+std::string WayLyrics::getLyrics(const std::string &trackName, const std::string &artist="") {
+  std::string trim_query = trackName + " " + artist;
   trim_query = trim(trim_query);
   if(trim_query.empty()) {
     return "";
   }
-  std::string encoded = url_encode(query);
-  std::string url = "https://lrclib.net/api/search?q=" + encoded;
+  std::string url =
+      "https://lrclib.net/api/search?track_name=" + url_encode(trackName);
+
+  // 如果提供了艺术家名称，添加到URL中
+  if(!artist.empty())
+      url += "&artist_name=" + url_encode(artist);
 
   if (url == currentURL) {
     return currentState_.metadata.lyrics;
   }
 
   std::filesystem::path lyricsCachePath =
-      cachePath / std::string(replace_space(query) + ".txt");
+      cachePath / std::string(replace_space(trim_query) + ".txt");
   std::string content;
 
   std::string syncedLyrics = "";
@@ -103,29 +117,20 @@ std::string WayLyrics::getLyrics(const std::string &query) {
       CURLcode res = curl_easy_perform(curl);
 
       if (res != CURLE_OK) {
-        std::cerr << __FILE__ << ":" << __func__ << ":" << __LINE__ << ":"
-                  << "CURL error: " << curl_easy_strerror(res) << std::endl;
+        ERROR("  >> CURL error: %s", curl_easy_strerror(res));
         return "";
       }
-
-      std::thread([lyricsCachePath, content, curl]() {
-        try {
-            std::fstream file(lyricsCachePath);
-            file << content;
-            if (file.fail()) {
-              ERROR("  >> Failed to write lyrics to cache file: %s",
-                    lyricsCachePath.c_str());
-              return;
-            }
-        } catch (const std::exception &e) {
-          WARN("  >> Failed to write lyrics to cache file: %s, error: %s",
-                lyricsCachePath.c_str(), e.what());
-        } catch (...) {
-          WARN("  >> Unknown error while writing lyrics to cache file: %s",
-                lyricsCachePath.c_str());
-        }
-        curl_easy_cleanup(curl);
-      }).detach();
+      long http_code = 0;
+      curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+      if (http_code != 200) {
+        ERROR("  >> HTTP error: %ld", http_code);
+        return "";
+      }
+      if (content.empty()) {
+        ERROR("  >> No content received");
+        return "";
+      }
+      curl_easy_cleanup(curl);
     }
   }
 
@@ -200,24 +205,44 @@ static std::string getSyncedLine(uint64_t pos, const std::string &syncedLyrics) 
   str = str.substr(time_len, str.size());
   return trim(str);
 }
-
-static void updateLabelText(GtkLabel *label, const std::string &text, uint64_t position, std::string prefix = "") {
-  // 使用 gdk_threads_add_idle 提交到主线程执行
+// 定义结构体包装三个参数
+struct UpdateData {
+  GtkLabel *label;
+  std::string text;
+  std::string status;
+};
+static void updateLabelText(GtkLabel *label, const std::string &text,
+                            uint64_t position, std::string prefix = "",
+                            const std::string &playerStatus = "playing") {
   auto line = getSyncedLine(position, text);
 
   line = prefix + line;
   DEBUG("  >> Updating label: positon:%ld, text: %s", position, line.c_str());
+  // 使用 gdk_threads_add_idle 提交到主线程执行
   gdk_threads_add_idle(
       [](gpointer data) -> gboolean {
-        auto *args = static_cast<std::pair<GtkLabel *, std::string> *>(data);
-        // 检查标签是否存活（GTK_IS_LABEL 宏）
-        if (GTK_IS_LABEL(args->first)) {
-          gtk_label_set_text(args->first, args->second.c_str());
-        }
-        delete args;  // 释放临时数据
-        return FALSE; // 只执行一次
-      },
-      new std::pair<GtkLabel *, std::string>(label, line)); // 传递标签和文本
+    auto *updateData = static_cast<UpdateData *>(data); // 转换为结构体指针
+    if (updateData == nullptr)
+      return FALSE;
+
+    // 检查标签是否存活
+    if (GTK_IS_LABEL(updateData->label)) {
+      // 设置标签文本
+      gtk_label_set_text(updateData->label, updateData->text.c_str());
+      // 添加播放状态对应的 CSS class（如 "playing" 或 "paused"）
+      auto context =
+          gtk_widget_get_style_context(GTK_WIDGET(updateData->label));
+      // 清理现有 所有class
+      for (const auto &class_name : {"playing", "paused", "stopped"}) {
+        gtk_style_context_remove_class(context, class_name);
+      }
+      gtk_style_context_add_class(context, updateData->status.c_str());
+    }
+
+    delete updateData; // 释放动态分配的内存
+    return FALSE;
+    }, new UpdateData{label, line, playerStatus}  // 传递结构体实例
+  );
 }
 
 void WayLyrics::start(GtkLabel *label) {
@@ -234,7 +259,10 @@ void WayLyrics::start(GtkLabel *label) {
   // 如果歌词为空且状态为播放中，则尝试获取歌词
   if (currentState_.metadata.lyrics.empty() &&
       currentState_.status == PlaybackStatus::Playing) {
-    currentState_.metadata.lyrics = getLyrics(currentState_.metadata.title + " " + currentState_.metadata.artist);
+    currentState_.metadata.lyrics = getLyrics(currentState_.metadata.title , currentState_.metadata.artist);
+    if (currentState_.metadata.lyrics.empty()) {
+      currentState_.metadata.lyrics = getLyrics(currentState_.metadata.title, "");
+    }
   }
   // 初始化时显示初始歌词
   std::string prefix = "";
@@ -252,63 +280,71 @@ void WayLyrics::start(GtkLabel *label) {
 
   INFO("  >> Starting update thread");
   updateThread_ = std::thread([this]() {
+    while (isRunning_) {
+      DEBUG("  >> Update thread started");
+      std::string prefix = "";
+      std::string lyricsLine = "";
+      std::string playerStatus = "playing";
       try {
-        while (isRunning_) {
-          DEBUG("  >> Update thread started");
-          std::string prefix = "";
-          std::string lyricsLine = "";
-          if (currentState_.playerName.empty()) {
-            lyricsLine = NOPLAYER;
-          } else if (currentState_.metadata.lyrics.empty()) {
+        if (!currentState_.metadata.title.empty()) {
+          prefix = "《" + currentState_.metadata.title + "》" +
+                    currentState_.metadata.artist + " - ";
+        } else {
+          prefix = "[no title]" + currentState_.metadata.artist + " - ";
+        }
+        if (currentState_.status == PlaybackStatus::Playing) {
+          playerStatus = "playing";
+          if (currentState_.metadata.lyrics.empty()) {
             lyricsLine = "no lyrics...";
-          } else if(currentState_.status != PlaybackStatus::Playing) {
-            lyricsLine = "paused...";
-            if(!currentState_.metadata.title.empty()) {
-              prefix = "《" + currentState_.metadata.title + "》" +
-                       currentState_.metadata.artist + " - ";
-            }
           } else {
-            if(!currentState_.metadata.title.empty()) {
-                prefix = "《" + currentState_.metadata.title + "》" +
-                           currentState_.metadata.artist + " - ";
-            } else {
-              prefix = "[unknown title] - ";
-            }
             lyricsLine = currentState_.metadata.lyrics;
           }
-          updateLabelText(displayLabel_, currentState_.metadata.lyrics,
-                        currentState_.position, prefix);
-          // 短间隔睡眠并检查 isRunning_，减少退出延迟
-          for (unsigned int i = 0; i < updateInterval_ && isRunning_; ++i) {
-            std::this_thread::sleep_for(std::chrono::seconds(1));
-            if (isRunning_ && currentState_.status == PlaybackStatus::Playing) {
-              currentState_.position += 1000;
-            }
+        } else if(currentState_.status == PlaybackStatus::Paused) {
+          playerStatus = "paused";
+          prefix = "paused...";
+        } else {
+          playerStatus = "stopped";
+          prefix = "stopped...";
+        }
+        updateLabelText(displayLabel_, currentState_.metadata.lyrics,
+                      currentState_.position, prefix, playerStatus);
+        // 短间隔睡眠并检查 isRunning_，减少退出延迟
+        for (unsigned int i = 0; i < updateInterval_ && isRunning_; ++i) {
+          std::this_thread::sleep_for(std::chrono::seconds(1));
+          if (isRunning_ && currentState_.status == PlaybackStatus::Playing) {
+            currentState_.position += 1000;
           }
         }
-    } catch (const std::exception &e) {
-      WARN("  >> Update thread error: %s", e.what());
-    } catch (...) {
-      WARN("  >> Unknown error in update thread");
+      } catch (const std::exception &e) {
+        WARN("  >> Update thread error: %s", e.what());
+        std::this_thread::sleep_for(std::chrono::seconds(1));  // 异常后短暂休眠避免高频重试
+      } catch (...) {
+        WARN("  >> Unknown error in update thread");
+        std::this_thread::sleep_for(std::chrono::seconds(1));  // 异常后短暂休眠避免高频重试
+      }
     }
+    INFO("  >> Update thread finished");
   });
 }
 
 void WayLyrics::stop() {
-  if (!isRunning_) return;
+  if(!isRunning_) return;
   isRunning_ = false;
-  // 主动等待线程退出（避免 sleep_for 延迟）
-  if (updateThread_.joinable()) {
-    // 等待线程退出（最多等待 1 秒，避免死锁）
-    if (updateThread_.joinable()) {
+  // 主动等待线程退出
+  try {
+    if(updateThread_.joinable()) {
+      DEBUG("  >> Waiting for update thread to finish");
       updateThread_.join();
     }
+    DEBUG("  >> Update thread stopped");
+    gdk_threads_add_idle([](gpointer data) { return FALSE; }, nullptr);
+    displayLabel_ = nullptr;
+    INFO("  >> WayLyrics stopped");
+  } catch (const std::exception &e) {
+    WARN("  >> Error joining update thread: %s", e.what());
+  } catch (...) {
+    WARN("  >> Unknown error joining update thread");
   }
-  // 确保所有 UI 任务执行完毕后再销毁标签
-  gdk_threads_add_idle([](gpointer data) {
-    return FALSE;
-  }, nullptr);
-  displayLabel_ = nullptr;  // 此时 UI 任务已无引用
 }
 
 void WayLyrics::toggle() { isRunning_ ? stop() : start(displayLabel_); }

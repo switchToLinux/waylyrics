@@ -80,10 +80,14 @@ std::vector<std::string> PlayerManager::listPlayerNames() {
 }
 
 PlayerState PlayerManager::getPlayerState() const {
+
   PlayerState state = {PlaybackStatus::Stopped, {}, 0, currentPlayer_};
   if(currentPlayer_.empty()) {
     return state;
   }
+  // 等待300毫秒以确保播放器已经准备好
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+
   sdbus::ServiceName destination{std::move(currentPlayer_)};
   sdbus::ObjectPath objectPath{"/org/mpris/MediaPlayer2"};
   auto playerProxy = sdbus::createProxy(*dbusConn_, std::move(destination),
@@ -99,17 +103,18 @@ PlayerState PlayerManager::getPlayerState() const {
 
     const std::string status = playbackStatus.get<std::string>();
 
-    if (status != "Playing") {
-      state.status = PlaybackStatus::Paused;
+    if (status != "Playing" && status != "Paused") {
+      state.status = PlaybackStatus::Stopped;
       std::cerr << __FILE__ << ":" << __func__ << ":" << __LINE__ << ":"
                 << "Not in playing state: " << status << std::endl;
       return state;
     } else {
-      state.status = PlaybackStatus::Playing;
+      state.status = status == "Playing" ? PlaybackStatus::Playing : PlaybackStatus::Paused;
     }
   } catch (const sdbus::Error &e) { // 捕获D-Bus特定错误
     std::cerr << __FILE__ << ":" << __func__ << ":" << __LINE__ << ":"
               << "D-Bus error0: " << e.getMessage() << std::endl;
+    state.status = PlaybackStatus::Unknown;
     return state;
   }
   // 2. 获取媒体元数据
@@ -218,8 +223,8 @@ void PlayerManager::startMonitoring() {
           players_.erase(name);
           if (name == currentPlayer_) {
             currentPlayer_ = switchNewPlayer();
+            updatePlayerState();
           }
-          updatePlayerState();
           INFO("Player exited: %s", name.c_str());
         } else if (oldOwner.empty()) {
           INFO("New player detected: %s", name.c_str());
@@ -234,12 +239,19 @@ void PlayerManager::startMonitoring() {
 void PlayerManager::stopMonitoring() {
   // 遍历所有播放器代理，移除信号监听器
   for (auto &[serviceName, playerProxy] : players_) {
-    playerProxy->unregister();
+    try{
+      playerProxy->unregister();
+      INFO("Unregistered player proxy for %s", serviceName.c_str());
+    } catch (const std::exception &e) {
+      WARN("Failed to unregister player proxy for %s: %s", serviceName.c_str(), e.what());
+    } catch (...) {
+      WARN("Failed to unregister player proxy for %s: Unknown error", serviceName.c_str());
+    }
   }
   players_.clear();
   dbusConn_->leaveEventLoop();
 }
-// 新增：Metadata 解析函数（实现）
+// Metadata 解析函数（实现）
 void PlayerManager::parseMetadata(
     const std::map<std::string, sdbus::Variant> &metadata,
     PlayerMetadata &out) const {
@@ -307,9 +319,7 @@ void PlayerManager::addNewPlayer(const std::string &serviceName) {
           }
           if(changedProps.count("PlaybackStatus")) {
             auto status = changedProps["PlaybackStatus"].get<std::string>();
-            if( status != "Playing" ) {
-              needCallback = true;
-            }
+            needCallback = true;
             INFO("PlaybackStatus changed: %s", status.c_str());
           }
           // 触发上层回调（线程安全：D-Bus事件循环可能在独立线程，需确保回调线程安全）
@@ -321,9 +331,6 @@ void PlayerManager::addNewPlayer(const std::string &serviceName) {
     // 完成信号注册并存储代理
     players_[serviceName] = std::move(playerProxy);
     INFO("New player added: %s", serviceName.c_str());
-    if (stateCallback_) {
-      updatePlayerState();
-    }
   } catch (const sdbus::Error &e) {
     WARN("Player proxy init error: %s", e.what());
   }
@@ -342,16 +349,161 @@ std::vector<std::string> PlayerManager::getAllPlayers() const {
   return playerNames;
 }
 
-// TODO: 实现切换当前播放器的方法（切换显示信息)
+// 实现切换当前播放器的方法（切换显示信息)
 void PlayerManager::setCurrentPlayer(const std::string &playerName) {
   currentPlayer_ = playerName;
   updatePlayerState();
 }
 
+// 更新播放器状态信息（调用回调）
 void PlayerManager::updatePlayerState() {
   DEBUG("updatePlayerState: %s", currentPlayer_.c_str());
   auto state = getPlayerState();
   if (stateCallback_) {
     stateCallback_(state);
   }
+}
+
+// 播放/暂停切换
+void PlayerManager::togglePlayPause() {
+  if (currentPlayer_.empty()) {
+    WARN("No current player selected for play/pause toggle");
+    return;
+  }
+  auto it = players_.find(currentPlayer_);
+  if (it == players_.end()) {
+    WARN("Current player proxy not found: %s", currentPlayer_.c_str());
+    return;
+  }
+  try {
+    it->second->callMethod("PlayPause")
+        .onInterface("org.mpris.MediaPlayer2.Player");
+    INFO("Toggled play/pause for player: %s", currentPlayer_.c_str());
+  } catch (const sdbus::Error &e) {
+    WARN("PlayPause failed: %s", e.what());
+  }
+}
+
+// 下一首歌曲
+void PlayerManager::nextSong() {
+  if (currentPlayer_.empty()) {
+    WARN("No current player selected for next song");
+    return;
+  }
+  auto it = players_.find(currentPlayer_);
+  if (it == players_.end()) {
+    WARN("Current player proxy not found: %s", currentPlayer_.c_str());
+    return;
+  }
+  try {
+    it->second->callMethod("Next").onInterface("org.mpris.MediaPlayer2.Player");
+    INFO("Next song triggered for player: %s", currentPlayer_.c_str());
+  } catch (const sdbus::Error &e) {
+    WARN("Next song failed: %s", e.what());
+  }
+}
+
+// 上一首歌曲
+void PlayerManager::prevSong() {
+  if (currentPlayer_.empty()) {
+    WARN("No current player selected for previous song");
+    return;
+  }
+  auto it = players_.find(currentPlayer_);
+  if (it == players_.end()) {
+    WARN("Current player proxy not found: %s", currentPlayer_.c_str());
+    return;
+  }
+  try {
+    it->second->callMethod("Previous")
+        .onInterface("org.mpris.MediaPlayer2.Player");
+    INFO("Previous song triggered for player: %s", currentPlayer_.c_str());
+  } catch (const sdbus::Error &e) {
+    WARN("Previous song failed: %s", e.what());
+  }
+}
+
+// 停止播放
+void PlayerManager::stopPlayer() {
+  if (currentPlayer_.empty()) {
+    WARN("No current player selected for stop");
+    return;
+  }
+  auto it = players_.find(currentPlayer_);
+  if (it == players_.end()) {
+    WARN("Current player proxy not found: %s", currentPlayer_.c_str());
+    return;
+  }
+  try {
+    it->second->callMethod("Stop").onInterface("org.mpris.MediaPlayer2.Player");
+    INFO("Stopped player: %s", currentPlayer_.c_str());
+  } catch (const sdbus::Error &e) {
+    WARN("Stop failed: %s", e.what());
+  }
+}
+
+// 设置循环模式（需要在头文件中定义LoopStatus枚举）
+void PlayerManager::setLoopStatus(LoopStatus status) {
+  if (currentPlayer_.empty()) {
+    WARN("No current player selected for loop status");
+    return;
+  }
+  auto it = players_.find(currentPlayer_);
+  if (it == players_.end()) {
+    WARN("Current player proxy not found: %s", currentPlayer_.c_str());
+    return;
+  }
+  const char *statusStr;
+  switch (status) {
+  case LoopStatus::None:
+    statusStr = "None";
+    break;
+  case LoopStatus::Track:
+    statusStr = "Track";
+    break;
+  case LoopStatus::Playlist:
+    statusStr = "Playlist";
+    break;
+  default: {
+    WARN("Invalid loop status");
+    return;
+  }
+  }
+  try {
+    it->second->callMethod("Set")
+        .onInterface("org.freedesktop.DBus.Properties")
+        .withArguments("org.mpris.MediaPlayer2.Player", "LoopStatus",
+                       sdbus::Variant(statusStr));
+    INFO("Set loop status to %s for player: %s", statusStr,
+         currentPlayer_.c_str());
+  } catch (const sdbus::Error &e) {
+    WARN("Set loop status failed: %s", e.what());
+  }
+}
+
+// 设置随机播放
+void PlayerManager::setShuffle(bool enable) {
+  if (currentPlayer_.empty()) {
+    WARN("No current player selected for shuffle");
+    return;
+  }
+  auto it = players_.find(currentPlayer_);
+  if (it == players_.end()) {
+    WARN("Current player proxy not found: %s", currentPlayer_.c_str());
+    return;
+  }
+  try {
+    it->second->callMethod("Set")
+        .onInterface("org.freedesktop.DBus.Properties")
+        .withArguments("org.mpris.MediaPlayer2.Player", "Shuffle",
+                       sdbus::Variant(enable));
+    INFO("Set shuffle %s for player: %s", enable ? "on" : "off",
+         currentPlayer_.c_str());
+    isShuffle_ = enable;
+  } catch (const sdbus::Error &e) {
+    WARN("Set shuffle failed: %s", e.what());
+  }
+}
+bool PlayerManager::isShuffle() const {
+  return isShuffle_;
 }

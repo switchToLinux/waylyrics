@@ -76,3 +76,10 @@ make install DESTDIR=/path/to/libs/
 - waybar偶尔会core,暂时分析什么原因，但多启动几次还是可以启动的，猜测是跟线程有关问题。
 - 歌词不更新： 触发了某些为止的异常导致更新歌词线程退出，需要重启waybar,但遇到这种情况最好反馈给我，描述在什么情况下触发bug了，这样我才能快速修复问题，避免以后一直被这类问题困扰。
 
+
+## 学习参考资料
+
+- [使用sdbus-c++文档](https://kistler-group.github.io/sdbus-cpp/docs/using-sdbus-c++.html)
+- [cffi-example代码示例](https://github.com/Alexays/Waybar/tree/master/resources/custom_modules/cffi_example/)
+
+

@@ -10,7 +10,7 @@ DESTDIR = ~/.config/cffi/
 ALL = $(TARGET)
 
 $(TARGET):
-	@meson setup $(BUILD_DIR) -Dcpp_args=-DERROR_ENABLED
+	@meson setup $(BUILD_DIR)
 	@meson compile -C $(BUILD_DIR) waylyrics
 	@echo "Build complete!"
 
