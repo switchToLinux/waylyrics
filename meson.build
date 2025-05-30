@@ -17,8 +17,8 @@ epoxy          = dependency('epoxy')
 glm            = dependency('glm')
 sdbus          = dependency('sdbus-c++')
 
-shared_library('waylyrics',
-    ['./src/waylyrics.cpp', './src/player_manager.cpp', './src/way_lyrics.cpp'],
+shared_library('waybar_cffi_lyrics',
+    ['./src/waybar_cffi_lyrics.cpp', './src/player_manager.cpp', './src/way_lyrics.cpp'],
     dependencies: [libcurl, gtk, sdbus, glm, epoxy],
     include_directories: incdir,
     name_prefix: 'lib'

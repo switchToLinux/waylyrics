@@ -1,6 +1,8 @@
-# libwaylyrics.so 的编译
+# 编译
 
-TARGET = libwaylyrics.so
+LIBNAME = waybar_cffi_lyrics
+
+TARGET = libwaybar_cffi_lyrics.so
 BUILD_DIR = build
 
 # 通过参数设置 DESTDIR
@@ -11,15 +13,15 @@ ALL = $(TARGET)
 
 $(TARGET):
 	@meson setup $(BUILD_DIR)
-	@meson compile -C $(BUILD_DIR) waylyrics
+	@meson compile -C $(BUILD_DIR) $(LIBNAME)
 	@echo "Build complete!"
 
 debug:
 	@meson setup $(BUILD_DIR) -Dcpp_args=-DDEBUG_ENABLED
-	@meson compile -C $(BUILD_DIR) waylyrics
+	@meson compile -C $(BUILD_DIR) $(LIBNAME)
 	@echo "Build complete!"
 
-demo:
+demos:
 	@meson setup $(BUILD_DIR) -Dcpp_args=-DDEBUG_ENABLED
 	@meson compile -C $(BUILD_DIR) demo
 
